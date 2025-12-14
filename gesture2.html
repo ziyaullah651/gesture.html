@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Advanced Gesture‑Driven Particle Universe</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- Three.js -->
+  <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
+
+  <!-- MediaPipe Hands -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: radial-gradient(circle at top, #101020, #05050a);
+      font-family: system-ui, sans-serif;
+      color: white;
+    }
+
+    #ui {
+      position: fixed;
+      top: 18px;
+      left: 18px;
+      display: flex;
+      gap: 12px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: rgba(25, 25, 40, 0.75);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 20px 40px rgba(0,0,0,0.45);
+      z-index: 10;
+    }
+
+    select, input[type=color] {
+      background: #0e0e1a;
+      color: white;
+      border: 1px solid #333;
+      border-radius: 10px;
+      padding: 6px 10px;
+    }
+
+    #hint {
+      position: fixed;
+      bottom: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      opacity: 0.75;
+      font-size: 13px;
+    }
+
+    video { display: none; }
+  </style>
+</head>
+<body>
+
+<div id="ui">
+  <select id="template">
+    <option value="heart">❤ Hearts</option>
+    <option value="flower">🌸 Flowers</option>
+    <option value="saturn">🪐 Saturn</option>
+    <option value="fireworks">🎆 Fireworks</option>
+  </select>
+  <input type="color" id="color" value="#ff4dff" />
+</div>
+
+<div id="hint">Left hand = Color • Right hand = Size & Force • Fist = Explosion • Swipe = Change Template</div>
+
+<video id="video" autoplay playsinline></video>
+
+<script>
+/*********************
+ * SCENE SETUP
+ *********************/
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 1000);
+camera.position.z = 90;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+/*********************
+ * PARTICLE SYSTEM
+ *********************/
+const COUNT = 8000;
+let geometry = new THREE.BufferGeometry();
+let positions = new Float32Array(COUNT * 3);
+let velocities = new Float32Array(COUNT * 3);
+
+const material = new THREE.PointsMaterial({
+  size: 1.1,
+  color: '#ff4dff'
+});
+
+const particles = new THREE.Points(geometry, material);
+scene.add(particles);
+
+function generateShape(type) {
+  for (let i = 0; i < COUNT; i++) {
+    let x = 0, y = 0, z = 0;
+    const t = Math.random() * Math.PI * 2;
+
+    if (type === 'heart') {
+      x = 16 * Math.pow(Math.sin(t), 3);
+      y = 13 * Math.cos(t) - 5 * Math.cos(2 * t);
+      z = (Math.random() - 0.5) * 6;
+    }
+    if (type === 'flower') {
+      const r = 10 * Math.sin(6 * t);
+      x = r * Math.cos(t);
+      y = r * Math.sin(t);
+      z = (Math.random() - 0.5) * 6;
+    }
+    if (type === 'saturn') {
+      const r = 18 + Math.random() * 8;
+      x = r * Math.cos(t);
+      y = (Math.random() - 0.5) * 4;
+      z = r * Math.sin(t);
+    }
+    if (type === 'fireworks') {
+      const r = Math.random() * 25;
+      const p = Math.random() * Math.PI;
+      x = r * Math.sin(p) * Math.cos(t);
+      y = r * Math.cos(p);
+      z = r * Math.sin(p) * Math.sin(t);
+    }
+
+    positions.set([x, y, z], i * 3);
+    velocities.set([(Math.random()-0.5)*0.02, (Math.random()-0.5)*0.02, (Math.random()-0.5)*0.02], i * 3);
+  }
+
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+}
+
+/*********************
+ * UI CONTROLS
+ *********************/
+document.getElementById('template').onchange = e => generateShape(e.target.value);
+document.getElementById('color').oninput = e => material.color.set(e.target.value);
+
+generateShape('heart');
+
+/*********************
+ * HAND TRACKING
+ *********************/
+const hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+
+let scaleTarget = 1;
+let force = 0.02;
+let lastTemplateSwitch = 0;
+
+hands.onResults(results => {
+  if (!results.multiHandLandmarks) return;
+
+  results.multiHandLandmarks.forEach((hand, i) => {
+    const thumb = hand[4];
+    const index = hand[8];
+    const palm = hand[0];
+
+    const dist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
+
+    if (i === 0) {
+      material.color.setHSL(dist * 2, 1, 0.6);
+    } else {
+      scaleTarget = THREE.MathUtils.clamp(dist * 10, 0.5, 3.5);
+      force = dist * 0.08;
+
+      if (dist < 0.03) explode();
+
+      if (Math.abs(palm.x - 0.5) > 0.3 && Date.now() - lastTemplateSwitch > 1200) {
+        cycleTemplate();
+        lastTemplateSwitch = Date.now();
+      }
+    }
+  });
+});
+
+function explode() {
+  for (let i = 0; i < velocities.length; i++) velocities[i] *= 8;
+}
+
+const templates = ['heart', 'flower', 'saturn', 'fireworks'];
+let currentTemplate = 0;
+
+function cycleTemplate() {
+  currentTemplate = (currentTemplate + 1) % templates.length;
+  document.getElementById('template').value = templates[currentTemplate];
+  generateShape(templates[currentTemplate]);
+}
+
+const video = document.getElementById('video');
+const cam = new Camera(video, {
+  onFrame: async () => await hands.send({ image: video }),
+  width: 640,
+  height: 480
+});
+cam.start();
+
+/*********************
+ * ANIMATION LOOP
+ *********************/
+function animate() {
+  requestAnimationFrame(animate);
+
+  particles.scale.lerp(new THREE.Vector3(scaleTarget, scaleTarget, scaleTarget), 0.2);
+
+  for (let i = 0; i < positions.length; i += 3) {
+    positions[i]     += velocities[i] * force;
+    positions[i + 1] += velocities[i + 1] * force;
+    positions[i + 2] += velocities[i + 2] * force;
+
+    velocities[i] *= 0.98;
+    velocities[i + 1] *= 0.98;
+    velocities[i + 2] *= 0.98;
+  }
+
+  geometry.attributes.position.needsUpdate = true;
+  particles.rotation.y += 0.0015;
+  renderer.render(scene, camera);
+}
+
+animate();
+</script>
+
+</body>
+</html>
